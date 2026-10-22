@@ -57,20 +57,33 @@ try {
   // Starting: one instance per installation, checking in on the timer, stopped at the end.
   const link = (await CoreLink.open(env))!;
   const lines: string[] = [];
-  const stop = await startInstances(link, 100, (line) => lines.push(line));
+  const running = startInstances(link, 100, (line) => lines.push(line));
+  await running.ready;
   list = await records();
   assert.equal(list.instances.length, 2);
   assert.ok(list.instances.every((item: { state: string; capacity: number; resources: { memoryFreeMb?: number } }) => item.state === 'RUNNING' && item.capacity === 4 && typeof item.resources.memoryFreeMb === 'number'));
   const startedAt = list.instances[0].lastCheckInAt;
   await new Promise((wait) => setTimeout(wait, 400));
   assert.ok((await records()).instances[0].lastCheckInAt > startedAt, 'it checks in');
-  await stop();
+  await running.stop();
   assert.ok((await records()).instances.every((item: { state: string }) => item.state === 'STOPPED'));
   assert.deepEqual(lines.filter((line) => /failed/.test(line)), []);
 
-  // Without the permission to run, starting says why, and Resource carries on (start.ts catches it).
+  // Core cannot record it yet (here: no permission to run, as when Foundation Access is not up): it says why once, keeps
+  // trying, and is recorded as soon as Core accepts it.
   granted.delete('core.services.run');
-  await assert.rejects(() => startInstances(link, 0, () => {}), /core.services.run administration is not authorized/);
+  const waiting: string[] = [];
+  const late = startInstances(link, 100, (line) => waiting.push(line));
+  await late.ready;
+  await new Promise((wait) => setTimeout(wait, 300));
+  assert.equal(waiting.length, 1, 'the same problem is said once');
+  assert.match(waiting[0], /could not record itself with Core yet: .*core.services.run administration is not authorized.*tries again/);
+  assert.equal(late.instances.length, 0);
+  granted.add('core.services.run');
+  await new Promise((wait) => setTimeout(wait, 300));
+  assert.equal(late.instances.length, 2, 'recorded once Core accepts it');
+  assert.match(waiting.join(' '), /Core is answering again/);
+  await late.stop();
   console.log('Resource and Core test passed.');
 } finally {
   await new Promise<void>((done) => { server.close(() => done()); server.closeAllConnections(); });
