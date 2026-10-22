@@ -1,13 +1,13 @@
 {
   "name": "@selo/foundation-resource",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Policy-controlled published-resource catalog and delivery service for SEMA.",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/smoke.ts",
+    "test": "tsx test/smoke.ts && tsx test/core-link.test.ts",
     "start": "node --env-file=.env dist/start.js",
     "dev": "tsx --env-file=.env src/start.ts",
     "sema:core:bootstrap": "tsx --env-file=.env src/bootstrap-core.ts"
