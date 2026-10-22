@@ -11,9 +11,9 @@ import { CoreLink, RESOURCE_SERVICE_KEY, resourceVersion } from './core-link.js'
  * 2. This Resource version as a service of each, and its installation on this machine.
  * 3. The old single records, which programs still read to find Resource's address, until they use the new ones.
  *
- * Grants needed in Foundation Access: core.capabilities.read, core.capabilities.register and core.services.install;
- * and, only while this runs the first time, core.capabilities.approve, because the names are in the reserved sema.
- * namespace (D-104). Revoke that one afterwards.
+ * Grants needed in Foundation Access: core.capabilities.read; and only while this runs, core.capabilities.register,
+ * core.services.install and core.capabilities.approve (the names are in the reserved sema. namespace, D-104), given
+ * with an end time.
  */
 const link = await CoreLink.open();
 if (!link) throw new Error('SEMA_RESOURCE_CORE_APPLICATION_SECRET is not set. Resource needs its own key and secret to register its signing key with Core: set SEMA_RESOURCE_CORE_APPLICATION_KEY (default sema.foundation.resource) and SEMA_RESOURCE_CORE_APPLICATION_SECRET in Resource\'s .env, add the same key and secret to Core\'s SEMA_APPLICATION_CLIENTS_JSON, and give that application its grants in Foundation Access.');

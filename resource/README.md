@@ -32,6 +32,6 @@ The catalog (contract 1.1.0) returns `groups` beside `resources`: only groups ho
 
 When Resource starts it records one running instance per installation with Core, checks in every `SEMA_RESOURCE_CHECK_IN_SECONDS` (default 60) with the memory it has free, and stops them when it stops. If Core cannot be reached, Resource says so and carries on serving files.
 
-Grants Resource's application needs in Foundation Access: `core.capabilities.read`, `core.capabilities.register`, `core.services.install`, `core.services.run`; and `core.capabilities.approve` only while the set-up script runs the first time (the names are in the reserved `sema.` namespace), revoked afterwards.
+Grants Resource's application needs in Foundation Access: standing, for each start, `core.capabilities.read` and `core.services.run`; and only while the set-up script runs, `core.capabilities.register`, `core.services.install` and `core.capabilities.approve` (the names are in the reserved `sema.` namespace), given with an end time.
 
 `npm test` runs the smoke test, and a test of the set-up and instances against a real Core host in memory (needs Core built).
