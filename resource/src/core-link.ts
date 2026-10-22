@@ -60,23 +60,44 @@ export function ownInstallations(records: CoreRecords, version = resourceVersion
 }
 
 /**
- * Resource's running copies (D-151): one instance per installation, recorded with Core when Resource starts, checking in
- * on a timer with the memory it has free (D-158), and stopped when Resource stops. Core being down never stops
- * Resource serving files; it says so and carries on.
+ * Resource's running copies (D-151): one instance per installation, recorded with Core, checking in on a timer with the
+ * memory it has free (D-158), and stopped when Resource stops. Resource starts before Foundation Access, so Core may not
+ * be able to check its permissions yet: until it is recorded, it tries again at every tick. Core being down never stops
+ * Resource serving files; it says so once and carries on. `ready` settles after the first try.
  */
-export async function startInstances(link: CoreLink, intervalMs: number, log: (line: string) => void = console.log) {
-  const installations = ownInstallations(await link.records());
-  if (!installations.length) { log(`Resource ${resourceVersion} is not installed with Core yet: run npm run sema:core:bootstrap. No instance recorded.`); return async () => {}; }
+export function startInstances(link: CoreLink, intervalMs: number, log: (line: string) => void = console.log) {
   const resources = () => ({ memoryFreeMb: Math.round(freemem() / 1_048_576) });
-  const instances: string[] = [];
-  for (const installation of installations) instances.push((await link.call<{ id: string }>('POST', '/v1/core/services/instances', { installationId: installation.id, capacity: 4, resources: resources() })).id);
-  log(`Recorded with Core as instance ${instances.join(', ')}.`);
-  const timer = intervalMs > 0 ? setInterval(() => {
-    for (const instanceId of instances) link.call('POST', '/v1/core/services/instances/check-in', { instanceId, resources: resources() }).catch((error: Error) => log(`Check-in with Core failed: ${error.message}`));
-  }, intervalMs) : undefined;
+  let instances: string[] | undefined;
+  let lastProblem = '';
+  const tick = async () => {
+    try {
+      if (!instances) {
+        const installations = ownInstallations(await link.records());
+        if (!installations.length) throw new Error(`Resource ${resourceVersion} is not installed with Core yet: run npm run sema:core:bootstrap`);
+        const recorded: string[] = [];
+        for (const installation of installations) recorded.push((await link.call<{ id: string }>('POST', '/v1/core/services/instances', { installationId: installation.id, capacity: 4, resources: resources() })).id);
+        instances = recorded;
+        log(`Recorded with Core as instance ${instances.join(', ')}.`);
+      } else {
+        await Promise.all(instances.map((instanceId) => link.call('POST', '/v1/core/services/instances/check-in', { instanceId, resources: resources() })));
+      }
+      if (lastProblem) { lastProblem = ''; log('Core is answering again.'); }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastProblem) { lastProblem = message; log(`${instances ? 'Check-in with Core failed' : 'Resource could not record itself with Core yet'}: ${message}. It carries on serving files${intervalMs > 0 ? ' and tries again' : ''}.`); }
+    }
+  };
+  const ready = tick();
+  const timer = intervalMs > 0 ? setInterval(() => { void tick(); }, intervalMs) : undefined;
   timer?.unref();
-  return async () => {
-    if (timer) clearInterval(timer);
-    await Promise.all(instances.map((instanceId) => link.call('POST', '/v1/core/services/instances/stop', { instanceId }).catch(() => undefined)));
+  return {
+    ready,
+    /** The instances recorded so far, if any. */
+    get instances() { return instances ?? []; },
+    async stop() {
+      if (timer) clearInterval(timer);
+      await ready;
+      await Promise.all((instances ?? []).map((instanceId) => link.call('POST', '/v1/core/services/instances/stop', { instanceId }).catch(() => undefined)));
+    },
   };
 }
