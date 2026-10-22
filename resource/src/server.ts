@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { RESOURCE_CATALOG_CAPABILITY, RESOURCE_DELIVERY_CAPABILITY, type ResourceGroup, type ResourceRecord } from './contracts.js';
+import { resourceVersion } from './core-link.js';
 import { allows } from './policy.js';
 import { ResourceStore } from './store.js';
 
@@ -20,7 +21,7 @@ export async function createResourceServer(store: ResourceStore, adminKey: strin
   return createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     try {
-      if (request.method === 'GET' && url.pathname === '/v1/resources/health') return json(response, 200, { status: 'ACTIVE', service: 'sema.foundation.resource', facility: 'sema.foundation.resource', version: '0.3.0' });
+      if (request.method === 'GET' && url.pathname === '/v1/resources/health') return json(response, 200, { status: 'ACTIVE', service: 'sema.foundation.resource', facility: 'sema.foundation.resource', version: resourceVersion });
       if (request.method === 'GET' && url.pathname === '/v1/resources/admin/index') {
         if (!admin(request, adminKey)) return json(response, 403, { error: 'Resource administration requires the Foundation Resource service credential.' });
         const index = await store.load();

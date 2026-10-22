@@ -1,4 +1,4 @@
-# SEMA Foundation Resource v0.3.0
+# SEMA Foundation Resource v0.4.0
 
 This is the policy-controlled boundary for published resources. It stores only explicitly published versions and never accepts private source paths, application databases, or end-user share credentials.
 
@@ -21,4 +21,17 @@ Files shared together, such as every output of one artwork, belong to a group. `
 
 The catalog (contract 1.1.0) returns `groups` beside `resources`: only groups holding at least one file the caller may see. Description and categories are as they were when shared, so a consumer has them even when the source application is closed.
 
-`npm test` runs the smoke test.
+
+## Capability records (0.4.0)
+
+`npm run sema:core:bootstrap` registers Resource with Core the new way (D-151, D-159), and is safe to run again:
+
+1. the two contracts, read from SEMA-Capabilities: `sema.foundation.resource.catalog` 1.1.0 (operation `list`) and `sema.foundation.resource.delivery` 1.0.1 (operation `read`);
+2. this Resource version as a service of each (`sema.foundation.resource-facility`), and its installation on this machine;
+3. the old single records, which programs still read to find Resource's address.
+
+When Resource starts it records one running instance per installation with Core, checks in every `SEMA_RESOURCE_CHECK_IN_SECONDS` (default 60) with the memory it has free, and stops them when it stops. If Core cannot be reached, Resource says so and carries on serving files.
+
+Grants Resource's application needs in Foundation Access: `core.capabilities.read`, `core.capabilities.register`, `core.services.install`, `core.services.run`; and `core.capabilities.approve` only while the set-up script runs the first time (the names are in the reserved `sema.` namespace), revoked afterwards.
+
+`npm test` runs the smoke test, and a test of the set-up and instances against a real Core host in memory (needs Core built).
