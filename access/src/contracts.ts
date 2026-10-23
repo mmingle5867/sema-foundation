@@ -21,7 +21,14 @@ export type NodeDescription = { nodeId: string; displayName: string; note?: stri
 export type ApplicationDefinition = {
   id: string; applicationKey: string; displayName: string; vendor?: string; version: string;
   description?: string; manifest: Record<string, unknown>; status: RecordStatus; createdAt: string; updatedAt: string;
+  /**
+   * Set for an application built outside SEMA, to be brought in later (D-177). Each installation of it gets its own
+   * basis, a fresh ID from Core, and issues its own IDs as basis-3, basis-4 and so on, so no two installations and
+   * nothing in SEMA can issue the same ID. The application's own ID is its identity, never a basis.
+   */
+  outside?: { bases: ApplicationBasis[] };
 };
+export type ApplicationBasis = { id: string; label: string; issuedAt: string };
 export type ApplicationInstallation = {
   id: string; applicationId: string; displayName: string; version: string; hostLabel?: string;
   locationHint?: string; status: InstallationStatus; installedAt: string; updatedAt: string;
