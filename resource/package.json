@@ -1,6 +1,6 @@
 {
   "name": "@selo/foundation-resource",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
   "description": "Policy-controlled published-resource catalog and delivery service for SEMA.",
