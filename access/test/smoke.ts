@@ -71,6 +71,23 @@ try {
   const application = await fetch('http://127.0.0.1:4349/v1/access/applications/import', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sema-access-admin-key': 'admin' }, body: JSON.stringify({ applicationKey: 'vectorforge', displayName: 'VectorForge', version: '0.71.3', manifest: { declaredActions: ['asset.import', 'asset.publish'] } }) });
   assert.equal(application.status, 201);
   const applicationRecord = await application.json() as { id: string };
+  // An application outside SEMA (D-177): each installation gets its own basis, a fresh ID from Core.
+  const admin = { 'content-type': 'application/json', 'x-sema-access-admin-key': 'admin' };
+  const outsideResponse = await fetch('http://127.0.0.1:4349/v1/access/applications/import', { method: 'POST', headers: admin, body: JSON.stringify({ applicationKey: 'neo.inventory', displayName: 'Inventory', version: '0.1.0', outside: true }) });
+  assert.equal(outsideResponse.status, 201);
+  const outsideApp = await outsideResponse.json() as { id: string; outside: { bases: unknown[] } };
+  assert.deepEqual(outsideApp.outside, { bases: [] });
+  const addBasis = (applicationId: string, label: string, headers: Record<string, string> = admin) => fetch(`http://127.0.0.1:4349/v1/access/applications/${applicationId}/bases`, { method: 'POST', headers, body: JSON.stringify({ label }) });
+  const office = await addBasis(outsideApp.id, 'Office PC');
+  assert.equal(office.status, 201);
+  const officeBody = await office.json() as { basis: { id: string; label: string }; application: { outside: { bases: Array<{ id: string }> } } };
+  const shop = await (await addBasis(outsideApp.id, 'Shop laptop')).json() as { basis: { id: string }; application: { outside: { bases: Array<{ id: string }> } } };
+  assert.notEqual(officeBody.basis.id, shop.basis.id, 'each installation has its own basis');
+  assert.notEqual(officeBody.basis.id, outsideApp.id, "the application's own ID is never a basis");
+  assert.deepEqual(shop.application.outside.bases.map((basis) => basis.id), [officeBody.basis.id, shop.basis.id]);
+  assert.equal((await addBasis(outsideApp.id, 'office pc')).status, 400, 'labels do not repeat');
+  assert.equal((await addBasis(applicationRecord.id, 'Office PC')).status, 400, 'only an outside application gets bases');
+  assert.equal((await addBasis(outsideApp.id, 'Another', { 'content-type': 'application/json' })).status, 403, 'administration is required');
   const noteResponse = await fetch('http://127.0.0.1:4349/v1/access/testing-notes', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sema-access-admin-key': 'admin' }, body: JSON.stringify({ subjectKind: 'APPLICATION', subjectId: applicationRecord.id, kind: 'CHANGE_REQUEST', priority: 'NORMAL', title: 'Add clear test feedback', detail: 'Capture review notes for later implementation.' }) });
   assert.equal(noteResponse.status, 201);
   const note = await noteResponse.json() as { id: string };
