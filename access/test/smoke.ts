@@ -73,6 +73,13 @@ try {
   const applicationRecord = await application.json() as { id: string };
   // An application outside SEMA (D-177): each installation gets its own basis, a fresh ID from Core.
   const admin = { 'content-type': 'application/json', 'x-sema-access-admin-key': 'admin' };
+  // An application's key is its permanent name; an outside one starts with its company and is never sema.
+  const register = (applicationKey: string, outside: boolean) => fetch('http://127.0.0.1:4349/v1/access/applications/import', { method: 'POST', headers: admin, body: JSON.stringify({ applicationKey, displayName: 'X', version: '0.1.0', outside }) });
+  for (const [key, outsideApp, why] of [['Neo.Inventory', true, 'capitals'], ['neo inventory', true, 'a space'], ['neo..inventory', true, 'an empty part'], ['inventory', true, 'no company'], ['sema.inventory', true, 'reserved'], ['neo_inventory', false, 'an underscore']] as const) {
+    const refused = await register(key, outsideApp);
+    assert.equal(refused.status, 400, `${key} is refused: ${why}`);
+    assert.match(((await refused.json()) as { error: string }).error, /Invalid applicationKey/);
+  }
   const outsideResponse = await fetch('http://127.0.0.1:4349/v1/access/applications/import', { method: 'POST', headers: admin, body: JSON.stringify({ applicationKey: 'neo.inventory', displayName: 'Inventory', version: '0.1.0', outside: true }) });
   assert.equal(outsideResponse.status, 201);
   const outsideApp = await outsideResponse.json() as { id: string; outside: { bases: unknown[] } };
