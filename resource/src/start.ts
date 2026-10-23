@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { createResourceServer } from './server.js';
 import { ResourceStore } from './store.js';
 import { CoreLink, startInstances } from './core-link.js';
@@ -22,4 +23,15 @@ try {
     stopInstances = () => running.stop();
   }
 } catch (error) { console.warn(`Resource could not open its link to Core: ${error instanceof Error ? error.message : String(error)}. It carries on serving files.`); }
-for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { void stopInstances().finally(() => server.close(() => process.exit(0))); });
+// Stopping: on Ctrl+C, or when the Console's stop script writes a file named .sema-stop into this folder (a background
+// process on Windows cannot be sent Ctrl+C). Either way the running copies are recorded as stopped before Resource ends.
+let stopping = false;
+const shutdown = (why: string) => {
+  if (stopping) return;
+  stopping = true;
+  console.log(`Stopping (${why}).`);
+  void stopInstances().finally(() => { server.close(() => process.exit(0)); server.closeAllConnections(); });
+};
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => shutdown(signal));
+const stopRequest = join(process.cwd(), '.sema-stop');
+setInterval(() => { if (existsSync(stopRequest)) { rmSync(stopRequest, { force: true }); shutdown('stop requested by the System Console'); } }, 1000).unref();

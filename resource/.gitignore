@@ -6,3 +6,5 @@ data/
 !.env.example
 *.zip
 *.log
+
+.sema-stop
