@@ -150,6 +150,21 @@ try {
   // Saving with neither services nor way removes the record.
   assert.deepEqual(await (await choose({})).json(), { removed: true });
   assert.deepEqual(((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices as { lists: unknown[] }).lists, []);
+  // Notes on capabilities and services (D-196 to D-198).
+  const itemNote = { kind: 'service', key: 'neo.ai.claude', summary: 'Answers Ask an AI with Claude.', details: 'Uses the Messages API.', dependencies: [{ kind: 'account', name: 'Anthropic', note: 'An API account.' }, { kind: 'setting', name: 'ANTHROPIC_API_KEY' }], examples: [{ title: 'Listing copy', operation: 'generate', request: { job: { key: 'listing-copy' } }, result: { title: 'A mug' } }] };
+  const saved = await post('/v1/access/item-notes', itemNote);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(Object.keys(await saved.json()).sort(), ['dependencies', 'details', 'examples', 'key', 'kind', 'summary', 'updatedAt']);
+  const read = (headers: Record<string, string>) => fetch('http://127.0.0.1:4349/v1/access/item-notes/service/neo.ai.claude', { headers });
+  assert.equal(((await (await read({ 'x-sema-access-policy-key': 'policy' })).json()) as { summary: string }).summary, 'Answers Ask an AI with Claude.', 'Core reads notes with the policy key');
+  assert.equal((await read({ 'x-sema-access-admin-key': 'admin' })).status, 200);
+  assert.equal((await read({})).status, 403);
+  assert.equal((await fetch('http://127.0.0.1:4349/v1/access/item-notes/capability/neo.ai.claude', { headers: admin })).status, 404, 'kinds are kept apart');
+  for (const [bad, why] of [[{ ...itemNote, kind: 'node' }, 'a kind'], [{ ...itemNote, key: 'Neo AI' }, 'a key'], [{ ...itemNote, dependencies: [{ kind: 'friend', name: 'x' }] }, 'a dependency kind'], [{ ...itemNote, dependencies: [{ kind: 'account' }] }, 'a dependency with no name'], [{ ...itemNote, examples: [{ title: 'x' }] }, 'an example with no request'], [{ ...itemNote, summary: 'x'.repeat(1001) }, 'a long summary']] as const) assert.equal((await post('/v1/access/item-notes', bad)).status, 400, `refused: ${why}`);
+  assert.equal((await post('/v1/access/item-notes', itemNote, { 'content-type': 'application/json' })).status, 403, 'administration is required to write');
+  assert.equal(((await (await fetch('http://127.0.0.1:4349/v1/access/index', { headers: admin })).json()) as { itemNotes: unknown[] }).itemNotes.length, 1, 'saving again replaces the itemNote');
+  assert.deepEqual(await (await post('/v1/access/item-notes', { kind: 'service', key: 'neo.ai.claude' })).json(), { removed: true }, 'an empty itemNote is removed');
+  assert.equal((await read({ 'x-sema-access-policy-key': 'policy' })).status, 404);
   console.log('Foundation Access smoke test passed.');
 } finally {
   await new Promise<void>((resolve, reject) => access.close((error) => error ? reject(error) : resolve()));

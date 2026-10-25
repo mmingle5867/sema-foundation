@@ -36,6 +36,16 @@ export type ServiceApproval = { id: string; organizationId: string; serviceVersi
 /** What Core gets with a "may" answer for a capability: the lists that apply, most specific first, and the approvals. */
 export type OrganizationChoices = { lists: string[][]; way?: ChoosingWay; approvalRequired: boolean; approved: string[] };
 
+/**
+ * Notes on a capability or a service (D-196 to D-198), by key so they cover every version: what it does, in plain words,
+ * its dependencies, and examples of a request and its result. Core joins them with its records to describe the item
+ * (GET /v1/core/describe/<kind>/<key>, D-199).
+ */
+export type DependencyKind = 'account' | 'setting' | 'program' | 'network' | 'software' | 'file' | 'other';
+export type ItemDependency = { kind: DependencyKind; name: string; note?: string };
+export type ItemExample = { title: string; operation?: string; request: unknown; result?: unknown; note?: string };
+export type ItemNote = { kind: 'capability' | 'service'; key: string; summary?: string; details?: string; dependencies: ItemDependency[]; examples: ItemExample[]; updatedAt: string };
+
 export type ApplicationDefinition = {
   id: string; applicationKey: string; displayName: string; vendor?: string; version: string;
   description?: string; manifest: Record<string, unknown>; status: RecordStatus; createdAt: string; updatedAt: string;
@@ -105,8 +115,8 @@ export type AccessIndex = {
   users: User[]; organizations: Organization[]; workspaces: Workspace[]; memberships: Membership[]; roleDefinitions: RoleDefinition[]; groups: AccessGroup[]; groupMemberships: GroupMembership[]; delegations: Delegation[];
   storageLocations: StorageLocation[]; nodeDescriptions: NodeDescription[]; applications: ApplicationDefinition[];
   installations: ApplicationInstallation[]; catalogReleases: CatalogRelease[]; grants: AccessGrant[]; testingNotes: TestingNote[]; changePackets: ChangePacket[];
-  capabilityChoices: CapabilityChoice[]; serviceApprovals: ServiceApproval[];
+  capabilityChoices: CapabilityChoice[]; serviceApprovals: ServiceApproval[]; itemNotes: ItemNote[];
 };
 
-export const blankIndex = (): AccessIndex => ({ version: 1, users: [], organizations: [], workspaces: [], memberships: [], roleDefinitions: [], groups: [], groupMemberships: [], delegations: [], storageLocations: [], nodeDescriptions: [], applications: [], installations: [], catalogReleases: [], grants: [], testingNotes: [], changePackets: [], capabilityChoices: [], serviceApprovals: [] });
+export const blankIndex = (): AccessIndex => ({ version: 1, users: [], organizations: [], workspaces: [], memberships: [], roleDefinitions: [], groups: [], groupMemberships: [], delegations: [], storageLocations: [], nodeDescriptions: [], applications: [], installations: [], catalogReleases: [], grants: [], testingNotes: [], changePackets: [], capabilityChoices: [], serviceApprovals: [], itemNotes: [] });
 export const blankAuthState = (): AuthState => ({ version: 1, credentials: [], sessions: [] });

@@ -2,6 +2,11 @@
 
 Local-first Foundation service for the administrative records shared by SEMA applications. It has no VectorForge, ListingForge, marketplace, or artwork workflow code.
 
+## Notes on capabilities and services (v0.11.0, D-196 to D-198)
+
+- `POST /v1/access/item-notes` saves the note on a capability or a service by `kind` (`capability` or `service`) and `key`: `summary` (what it does), `details`, `dependencies` (each `{ kind, name, note }`, kind one of account, setting, program, network, software, file, other) and `examples` (each `{ title, operation, request, result, note }`). A note with nothing in it is removed. At most 64 KB.
+- `GET /v1/access/item-notes/<kind>/<key>` reads one, with the administrator key or Core's policy key; Core joins it with its records to describe the item.
+
 ## The organization's choices (v0.10.0, D-190 to D-195)
 
 - `POST /v1/access/capability-choices` saves an organization's choices for a capability, optionally for one job and one workspace: `services`, an ordered list (a service key, or `key@version`) that is both what is allowed and the order tried, and `way`, the default way of choosing. Leaving out both removes the record.
