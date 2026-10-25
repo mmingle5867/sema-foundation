@@ -1,6 +1,6 @@
 {
   "name": "@selo/foundation-access",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "private": true,
   "type": "module",
   "description": "Local-first SEMA Foundation service for organizations, workspaces, nodes, applications, access, and service lifecycle administration.",

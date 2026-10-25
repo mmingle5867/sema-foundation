@@ -1,6 +1,13 @@
-# SEMA Foundation Access v0.5.0
+# SEMA Foundation Access
 
 Local-first Foundation service for the administrative records shared by SEMA applications. It has no VectorForge, ListingForge, marketplace, or artwork workflow code.
+
+## The organization's choices (v0.10.0, D-190 to D-195)
+
+- `POST /v1/access/capability-choices` saves an organization's choices for a capability, optionally for one job and one workspace: `services`, an ordered list (a service key, or `key@version`) that is both what is allowed and the order tried, and `way`, the default way of choosing. Leaving out both removes the record.
+- `POST /v1/access/organizations/:id/service-approval` and `/workspaces/:id/service-approval` with `{ "on": true }` turn on approval before first use; it is off unless turned on.
+- `POST /v1/access/service-approvals` approves one service version for an organization; `/service-approvals/:id/revoke` withdraws it.
+- `POST /v1/access/policy/evaluate` with `capabilityKey` (and `jobKey`, `workspaceId`) also returns the organization the command belongs to and its `choices`. A workspace Access does not know allows nothing.
 
 ## Existing Core policy configuration
 

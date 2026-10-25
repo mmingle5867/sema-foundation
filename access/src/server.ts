@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import type { AccessGrant, AccessGroup, ApplicationDefinition, CatalogRelease, ChangePacket, Delegation, GroupMembership, RoleDefinition, NodeDescription, StorageLocation, TestingNote, User, Workspace, Organization, Membership } from './contracts.js';
+import type { AccessGrant, AccessGroup, AccessIndex, ApplicationDefinition, CapabilityChoice, CatalogRelease, ChangePacket, ChoosingWay, Delegation, GroupMembership, OrganizationChoices, RoleDefinition, NodeDescription, ServiceApproval, StorageLocation, TestingNote, User, Workspace, Organization, Membership } from './contracts.js';
 import { AuthStore } from './auth-store.js';
 import { authenticateToken, bearerToken, createCredential, issueSession, normalizeEmail, verifyPassword, workspacesForUser } from './auth.js';
 import { AccessStore } from './store.js';
@@ -30,6 +30,30 @@ function applicationKeyOf(value: unknown, outside: boolean) {
   return key;
 }
 
+const KEY = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
+const keyOf = (value: unknown, name: string) => { const key = text(value, name); if (key.length > 120 || !KEY.test(key)) throw new Error(`Invalid ${name}: use lowercase letters and digits, with words joined by dots or hyphens`); return key; };
+/** A list entry names a service key, or one exact version as key@version. */
+const serviceEntry = (value: unknown) => { const entry = text(value, 'services entry'); const [key, version, extra] = entry.split('@'); if (extra !== undefined || !KEY.test(key ?? '') || (version !== undefined && !/^[0-9A-Za-z.+-]{1,40}$/.test(version))) throw new Error(`Invalid services entry ${entry}: a service key, or key@version`); return entry; };
+
+/**
+ * The choices that apply to a command for a capability (D-193): the organization's and the workspace's records, for the
+ * capability and for its job, most specific first. Core keeps a service only if every list allows it, so a workspace can
+ * only narrow its organization; the default way is the most specific one set.
+ */
+export function choicesFor(index: AccessIndex, organizationId: string, workspaceId: string | undefined, capabilityKey: string, jobKey: string | undefined): OrganizationChoices {
+  const records = index.capabilityChoices
+    .filter((record) => record.organizationId === organizationId && record.capabilityKey === capabilityKey && (!record.workspaceId || record.workspaceId === workspaceId) && (!record.jobKey || record.jobKey === jobKey))
+    .sort((a, b) => (Number(Boolean(b.workspaceId)) * 2 + Number(Boolean(b.jobKey))) - (Number(Boolean(a.workspaceId)) * 2 + Number(Boolean(a.jobKey))));
+  const organization = index.organizations.find((entry) => entry.id === organizationId);
+  const workspace = workspaceId ? index.workspaces.find((entry) => entry.id === workspaceId) : undefined;
+  return {
+    lists: records.filter((record) => record.services).map((record) => record.services!),
+    ...(records.find((record) => record.way) ? { way: records.find((record) => record.way)!.way } : {}),
+    approvalRequired: organization?.serviceApproval === true || workspace?.serviceApproval === true,
+    approved: index.serviceApprovals.filter((approval) => approval.organizationId === organizationId && !approval.revokedAt).map((approval) => approval.serviceVersionId),
+  };
+}
+
 export function createAccessServer(input: { store: AccessStore; authStore: AuthStore; core: CoreClient; adminKey: string; bootstrapKey: string; policyKey: string; sessionKey: string; sessionTtlMinutes: number }) {
   const admin = (request: IncomingMessage) => input.adminKey !== 'replace-with-a-strong-local-admin-key' && request.headers['x-sema-access-admin-key'] === input.adminKey;
   const bootstrap = (request: IncomingMessage) => input.bootstrapKey !== 'replace-with-a-one-time-bootstrap-key' && request.headers['x-sema-access-bootstrap-key'] === input.bootstrapKey;
@@ -43,9 +67,21 @@ export function createAccessServer(input: { store: AccessStore; authStore: AuthS
       if (request.method === 'POST' && url.pathname === '/v1/access/policy/evaluate') {
         if (request.headers['x-sema-access-policy-key'] !== input.policyKey) return json(response, 403, { error: 'Policy evaluation is not authorized.' });
         const payload = await body(request); const applicationKey = text(payload.applicationKey, 'applicationKey'); const operation = text(payload.operation, 'operation'); const index = await input.store.load();
+        // For a capability command Core also sends the capability, its job and the command's workspace, and gets back the
+        // organization the command belongs to and its choices (D-193).
+        const workspaceId = optional(payload.workspaceId); const capabilityKey = optional(payload.capabilityKey); const jobKey = optional(payload.jobKey);
+        const workspace = workspaceId ? index.workspaces.find((entry) => entry.id === workspaceId && entry.status === 'ACTIVE') : undefined;
         const application = index.applications.find((candidate) => candidate.applicationKey === applicationKey && candidate.status === 'ACTIVE');
-        const now = Date.now(); const allowed = Boolean(application && index.grants.some((grant) => grant.granteeKind === 'APPLICATION' && grant.granteeId === application.id && !grant.revokedAt && (!grant.expiresAt || Date.parse(grant.expiresAt) > now) && grant.operations.some((candidate) => candidate === operation || candidate === 'core.*' || (candidate.endsWith('.*') && operation.startsWith(candidate.slice(0, -1))))));
-        return json(response, 200, { allowed, applicationKey, operation });
+        const now = Date.now();
+        // A grant allows the operation; with a workspace, only a grant that reaches that workspace counts, and an unknown workspace allows nothing.
+        const allowing = application ? index.grants.filter((grant) => grant.granteeKind === 'APPLICATION' && grant.granteeId === application.id && !grant.revokedAt && (!grant.expiresAt || Date.parse(grant.expiresAt) > now) && grant.operations.some((candidate) => candidate === operation || candidate === 'core.*' || (candidate.endsWith('.*') && operation.startsWith(candidate.slice(0, -1))))
+          && (!workspaceId || Boolean(workspace && (!grant.organizationId || grant.organizationId === workspace.organizationId) && (!grant.workspaceId || grant.workspaceId === workspace.id)))) : [];
+        const allowed = allowing.length > 0;
+        if (!capabilityKey || !allowed) return json(response, 200, { allowed, applicationKey, operation });
+        // The command's workspace, else the organization of the grant that allowed it.
+        const organizationId = workspace?.organizationId ?? allowing.find((grant) => grant.organizationId)?.organizationId;
+        const choices: OrganizationChoices = organizationId ? choicesFor(index, organizationId, workspace?.id, capabilityKey, jobKey) : { lists: [], approvalRequired: false, approved: [] };
+        return json(response, 200, { allowed, applicationKey, operation, ...(organizationId ? { organizationId } : {}), ...(workspace ? { workspaceId: workspace.id } : {}), choices });
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/access/auth/login') {
@@ -229,6 +265,65 @@ export function createAccessServer(input: { store: AccessStore; authStore: AuthS
       if (request.method === 'POST' && /^\/v1\/access\/applications\/[^/]+$/.test(url.pathname)) { const applicationId = decodeURIComponent(url.pathname.split('/')[4] ?? ''); const payload = await body(request); const application = await input.store.update((index) => { const target = index.applications.find((entry) => entry.id === applicationId); if (!target) throw new Error('Application does not exist'); target.displayName = text(payload.displayName, 'displayName'); target.vendor = optional(payload.vendor); target.version = text(payload.version, 'version'); target.description = optional(payload.description); target.status = recordStatus(payload.status); target.updatedAt = new Date().toISOString(); return target; }); await audit('application.updated', [application.id], { applicationKey: application.applicationKey, status: application.status }); return json(response, 200, application); }
       if (request.method === 'POST' && url.pathname === '/v1/access/catalog/releases') { const payload = await body(request); const release: CatalogRelease = { id: await input.core.issue('SERVICE_RELEASE'), capabilityKey: text(payload.capabilityKey, 'capabilityKey'), providerKey: text(payload.providerKey, 'providerKey'), serviceKey: text(payload.serviceKey, 'serviceKey'), version: text(payload.version, 'version'), displayName: text(payload.displayName, 'displayName'), packageUri: optional(payload.packageUri), packageHash: optional(payload.packageHash), manifest: (payload.manifest && typeof payload.manifest === 'object' && !Array.isArray(payload.manifest) ? payload.manifest : {}) as Record<string, unknown>, trustStatus: 'UNVERIFIED', status: 'DISCOVERED', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; await input.store.update((index) => { index.catalogReleases.push(release); }); await audit('catalog.release.discovered', [release.id], { capabilityKey: release.capabilityKey, serviceKey: release.serviceKey }); return json(response, 201, release); }
       if (request.method === 'POST' && /^\/v1\/access\/catalog\/releases\/[^/]+\/transition$/.test(url.pathname)) { const releaseId = decodeURIComponent(url.pathname.split('/')[5] ?? ''); const payload = await body(request); const trustStatus = text(payload.trustStatus, 'trustStatus') as CatalogRelease['trustStatus']; const status = text(payload.status, 'status') as CatalogRelease['status']; if (!['UNVERIFIED', 'VERIFIED', 'REJECTED'].includes(trustStatus) || !['DISCOVERED', 'INSTALLED', 'ACTIVE', 'DISABLED', 'REMOVED'].includes(status)) throw new Error('Invalid release lifecycle status'); const release = await input.store.update((index) => { const target = index.catalogReleases.find((candidate) => candidate.id === releaseId); if (!target) throw new Error('Catalog release does not exist'); target.trustStatus = trustStatus; target.status = status; target.updatedAt = new Date().toISOString(); return target; }); await audit('catalog.release.transitioned', [release.id], { trustStatus, status }); return json(response, 200, release); }
+      // An organization's choices for a capability (D-190): saved in place for its organization, workspace, capability and job.
+      // With neither services nor way, the record is removed.
+      if (request.method === 'POST' && url.pathname === '/v1/access/capability-choices') {
+        const payload = await body(request); const organizationId = text(payload.organizationId, 'organizationId'); const workspaceId = optional(payload.workspaceId);
+        const capabilityKey = keyOf(payload.capabilityKey, 'capabilityKey'); const jobKey = payload.jobKey === undefined || payload.jobKey === null || payload.jobKey === '' ? undefined : keyOf(payload.jobKey, 'jobKey');
+        let services: string[] | undefined;
+        if (payload.services !== undefined && payload.services !== null) {
+          if (!Array.isArray(payload.services) || !payload.services.length || payload.services.length > 50) throw new Error('Invalid services: list 1 to 50 entries, or leave it out to allow every service');
+          services = payload.services.map(serviceEntry);
+          if (new Set(services).size !== services.length) throw new Error('Invalid services: an entry is repeated');
+        }
+        let way: ChoosingWay | undefined;
+        if (payload.way !== undefined && payload.way !== null && payload.way !== '') { way = text(payload.way, 'way') as ChoosingWay; if (!['bound', 'dynamic', 'consensus'].includes(way)) throw new Error('Invalid way: bound, dynamic or consensus'); }
+        const saved = await input.store.update((index) => {
+          if (!index.organizations.some((entry) => entry.id === organizationId)) throw new Error('organizationId does not exist');
+          if (workspaceId && !index.workspaces.some((entry) => entry.id === workspaceId && entry.organizationId === organizationId)) throw new Error('workspaceId does not exist for organizationId');
+          const same = (record: CapabilityChoice) => record.organizationId === organizationId && record.workspaceId === workspaceId && record.capabilityKey === capabilityKey && record.jobKey === jobKey;
+          index.capabilityChoices = index.capabilityChoices.filter((record) => !same(record));
+          if (!services && !way) return undefined;
+          const record: CapabilityChoice = { organizationId, ...(workspaceId ? { workspaceId } : {}), capabilityKey, ...(jobKey ? { jobKey } : {}), ...(services ? { services } : {}), ...(way ? { way } : {}), updatedAt: new Date().toISOString() };
+          index.capabilityChoices.push(record);
+          return record;
+        });
+        await audit('foundation-access.capability-choice.saved', [organizationId, ...(workspaceId ? [workspaceId] : [])], { capabilityKey, ...(jobKey ? { jobKey } : {}), services: services ?? null, way: way ?? null });
+        return json(response, 200, saved ?? { removed: true });
+      }
+      // Approval before first use, on or off, for an organization or a workspace (D-192).
+      if (request.method === 'POST' && /^\/v1\/access\/(organizations|workspaces)\/[^/]+\/service-approval$/.test(url.pathname)) {
+        const [, , , kind, rawId] = url.pathname.split('/'); const id = decodeURIComponent(rawId ?? ''); const payload = await body(request);
+        if (typeof payload.on !== 'boolean') throw new Error('on is required: true or false');
+        const on = payload.on;
+        const target = await input.store.update((index) => {
+          const record = kind === 'organizations' ? index.organizations.find((entry) => entry.id === id) : index.workspaces.find((entry) => entry.id === id);
+          if (!record) throw new Error(`${kind === 'organizations' ? 'Organization' : 'Workspace'} does not exist`);
+          if (on) record.serviceApproval = true; else delete record.serviceApproval;
+          return record;
+        });
+        await audit('foundation-access.service-approval.set', [id], { on });
+        return json(response, 200, target);
+      }
+      // An administrator approves one service version for an organization (D-191).
+      if (request.method === 'POST' && url.pathname === '/v1/access/service-approvals') {
+        const payload = await body(request); const organizationId = text(payload.organizationId, 'organizationId'); const serviceVersionId = text(payload.serviceVersionId, 'serviceVersionId');
+        const serviceKey = keyOf(payload.serviceKey, 'serviceKey'); const version = text(payload.version, 'version');
+        const approval: ServiceApproval = { id: await input.core.issue('SERVICE_APPROVAL', { organizationId, serviceVersionId }), organizationId, serviceVersionId, serviceKey, version, approvedAt: new Date().toISOString() };
+        await input.store.update((index) => {
+          if (!index.organizations.some((entry) => entry.id === organizationId)) throw new Error('organizationId does not exist');
+          if (index.serviceApprovals.some((entry) => entry.organizationId === organizationId && entry.serviceVersionId === serviceVersionId && !entry.revokedAt)) throw new Error('This service version is already approved for this organization');
+          index.serviceApprovals.push(approval);
+        });
+        await audit('foundation-access.service.approved', [approval.id, organizationId, serviceVersionId], { serviceKey, version });
+        return json(response, 201, approval);
+      }
+      if (request.method === 'POST' && /^\/v1\/access\/service-approvals\/[^/]+\/revoke$/.test(url.pathname)) {
+        const approvalId = decodeURIComponent(url.pathname.split('/')[4] ?? '');
+        const approval = await input.store.update((index) => { const target = index.serviceApprovals.find((entry) => entry.id === approvalId); if (!target) throw new Error('Approval does not exist'); if (!target.revokedAt) target.revokedAt = new Date().toISOString(); return target; });
+        await audit('foundation-access.service.approval-revoked', [approval.id, approval.organizationId, approval.serviceVersionId]);
+        return json(response, 200, approval);
+      }
       if (request.method === 'POST' && url.pathname === '/v1/access/grants') { const payload = await body(request); const grant: AccessGrant = { id: await input.core.issue('ACCESS_GRANT'), granteeKind: text(payload.granteeKind, 'granteeKind') as AccessGrant['granteeKind'], granteeId: text(payload.granteeId, 'granteeId'), operations: stringArray(payload.operations, 'operations'), organizationId: optional(payload.organizationId), workspaceId: optional(payload.workspaceId), applicationKey: optional(payload.applicationKey), issuedByUserId: optional(payload.issuedByUserId), expiresAt: optional(payload.expiresAt), createdAt: new Date().toISOString() }; if (!['USER', 'APPLICATION', 'GROUP'].includes(grant.granteeKind)) throw new Error('Invalid granteeKind'); await input.store.update((index) => { index.grants.push(grant); }); await audit('access.grant.created', [grant.id, grant.granteeId]); return json(response, 201, grant); }
       if (request.method === 'POST' && /^\/v1\/access\/grants\/[^/]+\/revoke$/.test(url.pathname)) { const grantId = decodeURIComponent(url.pathname.split('/')[4] ?? ''); const grant = await input.store.update((index) => { const target = index.grants.find((entry) => entry.id === grantId); if (!target) throw new Error('Grant does not exist'); if (!target.revokedAt) target.revokedAt = new Date().toISOString(); return target; }); await audit('access.grant.revoked', [grant.id, grant.granteeId]); return json(response, 200, grant); }
       return json(response, 404, { error: 'Foundation Access endpoint not found.' });
