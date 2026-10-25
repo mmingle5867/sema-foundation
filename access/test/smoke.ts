@@ -111,6 +111,45 @@ try {
   const release = await catalog.json() as { id: string };
   const transition = await fetch(`http://127.0.0.1:4349/v1/access/catalog/releases/${release.id}/transition`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-sema-access-admin-key': 'admin' }, body: JSON.stringify({ trustStatus: 'VERIFIED', status: 'ACTIVE' }) });
   assert.equal(transition.status, 200);
+  // The organization's choices (D-190 to D-195).
+  const post = (path: string, value: unknown, headers: Record<string, string> = admin) => fetch(`http://127.0.0.1:4349${path}`, { method: 'POST', headers, body: JSON.stringify(value) });
+  const organizationId = initial.organization.id;
+  const workspaces = await (await fetch('http://127.0.0.1:4349/v1/access/workspaces', { headers: admin })).json() as Array<{ id: string; organizationId: string }>;
+  const workspaceId = workspaces[0]!.id;
+  const evaluate = async (value: Record<string, unknown>) => (await post('/v1/access/policy/evaluate', { applicationKey: 'vectorforge', ...value }, { 'content-type': 'application/json', 'x-sema-access-policy-key': 'policy' })).json() as Promise<Record<string, unknown>>;
+  assert.equal((await post('/v1/access/grants', { granteeKind: 'APPLICATION', granteeId: applicationRecord.id, operations: ['capability.sema.ai.generate'], organizationId })).status, 201);
+  // No record: nothing narrowed, no approval needed.
+  assert.deepEqual(await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' }), { allowed: true, applicationKey: 'vectorforge', operation: 'capability.sema.ai.generate', organizationId, choices: { lists: [], approvalRequired: false, approved: [] } });
+  assert.deepEqual(Object.keys(await evaluate({ operation: 'capability.sema.ai.generate' })).sort(), ['allowed', 'applicationKey', 'operation'], 'without a capability the answer is as before');
+  const choose = (value: Record<string, unknown>) => post('/v1/access/capability-choices', { organizationId, capabilityKey: 'sema.ai.generate', ...value });
+  assert.equal((await choose({ services: ['neo.ai.claude', 'neo.ai.local@1.2.0'], way: 'dynamic' })).status, 200);
+  assert.equal((await choose({ jobKey: 'listing-copy', services: ['neo.ai.claude'] })).status, 200);
+  assert.equal((await choose({ workspaceId, way: 'consensus' })).status, 200);
+  for (const [bad, why] of [[{ services: [] }, 'an empty list'], [{ services: ['Neo.Claude'] }, 'capitals'], [{ services: ['a@1@2'] }, 'two versions'], [{ services: ['a', 'a'] }, 'a repeat'], [{ way: 'policy' }, 'not a default way'], [{ workspaceId: 'nope', way: 'bound' }, 'an unknown workspace']] as const) assert.equal((await choose(bad)).status, 400, `refused: ${why}`);
+  assert.equal((await choose({ way: 'bound' }).then(() => post('/v1/access/capability-choices', { organizationId, capabilityKey: 'sema.ai.generate', way: 'bound' }, { 'content-type': 'application/json' }))).status, 403, 'administration is required');
+  await choose({ services: ['neo.ai.claude', 'neo.ai.local@1.2.0'], way: 'dynamic' });
+  // In a workspace, for the job: the most specific list first, the workspace's way.
+  const inWorkspace = await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate', jobKey: 'listing-copy', workspaceId });
+  assert.deepEqual(inWorkspace.choices, { lists: [['neo.ai.claude'], ['neo.ai.claude', 'neo.ai.local@1.2.0']], way: 'consensus', approvalRequired: false, approved: [] });
+  assert.equal(inWorkspace.workspaceId, workspaceId);
+  assert.deepEqual((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices, { lists: [['neo.ai.claude', 'neo.ai.local@1.2.0']], way: 'dynamic', approvalRequired: false, approved: [] }, 'another job or no workspace: only what applies');
+  assert.equal((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate', workspaceId: 'unknown' })).allowed, false, 'an unknown workspace allows nothing');
+  // Approval before first use: off unless turned on; per service version.
+  assert.equal((await post(`/v1/access/workspaces/${workspaceId}/service-approval`, { on: true })).status, 200);
+  assert.equal(((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate', workspaceId })).choices as { approvalRequired: boolean }).approvalRequired, true, 'a workspace may turn it on for itself');
+  assert.equal(((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices as { approvalRequired: boolean }).approvalRequired, false, 'not for the rest of the organization');
+  assert.equal((await post(`/v1/access/organizations/${organizationId}/service-approval`, { on: 'yes' })).status, 400);
+  assert.equal((await post(`/v1/access/organizations/${organizationId}/service-approval`, { on: true })).status, 200);
+  const approvalResponse = await post('/v1/access/service-approvals', { organizationId, serviceVersionId: '3-sv1', serviceKey: 'neo.ai.claude', version: '0.3.2' });
+  assert.equal(approvalResponse.status, 201);
+  const approval = await approvalResponse.json() as { id: string };
+  assert.equal((await post('/v1/access/service-approvals', { organizationId, serviceVersionId: '3-sv1', serviceKey: 'neo.ai.claude', version: '0.3.2' })).status, 400, 'approved once');
+  assert.deepEqual((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices, { lists: [['neo.ai.claude', 'neo.ai.local@1.2.0']], way: 'dynamic', approvalRequired: true, approved: ['3-sv1'] });
+  assert.equal((await post(`/v1/access/service-approvals/${approval.id}/revoke`, {})).status, 200);
+  assert.deepEqual(((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices as { approved: string[] }).approved, [], 'a revoked approval no longer counts');
+  // Saving with neither services nor way removes the record.
+  assert.deepEqual(await (await choose({})).json(), { removed: true });
+  assert.deepEqual(((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices as { lists: unknown[] }).lists, []);
   console.log('Foundation Access smoke test passed.');
 } finally {
   await new Promise<void>((resolve, reject) => access.close((error) => error ? reject(error) : resolve()));

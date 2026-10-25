@@ -2,8 +2,13 @@ export type RecordStatus = 'ACTIVE' | 'SUSPENDED' | 'RETIRED';
 export type InstallationStatus = 'DISCOVERED' | 'INSTALLED' | 'ACTIVE' | 'DISABLED' | 'REMOVED';
 
 export type User = { id: string; displayName: string; email?: string; status: RecordStatus; createdAt: string };
-export type Organization = { id: string; displayName: string; status: RecordStatus; createdAt: string };
-export type Workspace = { id: string; organizationId: string; displayName: string; kind: string; status: RecordStatus; createdAt: string };
+/**
+ * serviceApproval: approval before first use (D-192). When on, a service version runs for this organization only once an
+ * administrator has approved it here. Off unless turned on, so developers can publish services without being blocked. A
+ * workspace may turn it on for itself, never off when its organization has it on.
+ */
+export type Organization = { id: string; displayName: string; status: RecordStatus; createdAt: string; serviceApproval?: boolean };
+export type Workspace = { id: string; organizationId: string; displayName: string; kind: string; status: RecordStatus; createdAt: string; serviceApproval?: boolean };
 export type Membership = { id: string; userId: string; organizationId: string; workspaceId?: string; roleKeys: string[]; status: RecordStatus; createdAt: string };
 export type RoleDefinition = { id: string; key: string; displayName: string; description?: string; scopeKind: 'ORGANIZATION' | 'WORKSPACE'; status: RecordStatus; createdAt: string };
 export type AccessGroup = { id: string; organizationId: string; workspaceId?: string; displayName: string; description?: string; status: RecordStatus; createdAt: string };
@@ -17,6 +22,19 @@ export type StorageLocation = { id: string; organizationId: string; workspaceId?
  * node description is kept only for nodes that have neither, such as sites, machines and groups of people.
  */
 export type NodeDescription = { nodeId: string; displayName: string; note?: string; updatedAt: string };
+
+/**
+ * An organization's choices for a capability (D-190 to D-195), optionally for one job of Ask an AI and optionally for one
+ * workspace. services is an ordered list, both which services are allowed and the order they are tried; an entry is a
+ * service key (its usable versions, newest first) or key@version. No list: every service allowed. way is the default
+ * way of choosing for a command that names none. A workspace only narrows: every list that applies must allow a service.
+ */
+export type ChoosingWay = 'bound' | 'dynamic' | 'consensus';
+export type CapabilityChoice = { organizationId: string; workspaceId?: string; capabilityKey: string; jobKey?: string; services?: string[]; way?: ChoosingWay; updatedAt: string };
+/** An administrator's approval of one service version for an organization (D-191). It never covers a newer version. */
+export type ServiceApproval = { id: string; organizationId: string; serviceVersionId: string; serviceKey: string; version: string; approvedAt: string; revokedAt?: string };
+/** What Core gets with a "may" answer for a capability: the lists that apply, most specific first, and the approvals. */
+export type OrganizationChoices = { lists: string[][]; way?: ChoosingWay; approvalRequired: boolean; approved: string[] };
 
 export type ApplicationDefinition = {
   id: string; applicationKey: string; displayName: string; vendor?: string; version: string;
@@ -87,7 +105,8 @@ export type AccessIndex = {
   users: User[]; organizations: Organization[]; workspaces: Workspace[]; memberships: Membership[]; roleDefinitions: RoleDefinition[]; groups: AccessGroup[]; groupMemberships: GroupMembership[]; delegations: Delegation[];
   storageLocations: StorageLocation[]; nodeDescriptions: NodeDescription[]; applications: ApplicationDefinition[];
   installations: ApplicationInstallation[]; catalogReleases: CatalogRelease[]; grants: AccessGrant[]; testingNotes: TestingNote[]; changePackets: ChangePacket[];
+  capabilityChoices: CapabilityChoice[]; serviceApprovals: ServiceApproval[];
 };
 
-export const blankIndex = (): AccessIndex => ({ version: 1, users: [], organizations: [], workspaces: [], memberships: [], roleDefinitions: [], groups: [], groupMemberships: [], delegations: [], storageLocations: [], nodeDescriptions: [], applications: [], installations: [], catalogReleases: [], grants: [], testingNotes: [], changePackets: [] });
+export const blankIndex = (): AccessIndex => ({ version: 1, users: [], organizations: [], workspaces: [], memberships: [], roleDefinitions: [], groups: [], groupMemberships: [], delegations: [], storageLocations: [], nodeDescriptions: [], applications: [], installations: [], catalogReleases: [], grants: [], testingNotes: [], changePackets: [], capabilityChoices: [], serviceApprovals: [] });
 export const blankAuthState = (): AuthState => ({ version: 1, credentials: [], sessions: [] });
