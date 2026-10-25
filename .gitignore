@@ -7,3 +7,5 @@ node_modules/
 # Private keys never leave the machine
 access/keys/
 resource/keys/
+# Built by npm run build; never kept in git
+/dist/
