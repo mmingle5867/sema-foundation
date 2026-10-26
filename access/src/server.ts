@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import type { AccessGrant, AccessGroup, AccessIndex, ApplicationDefinition, CapabilityChoice, CatalogRelease, ChangePacket, ChoosingWay, Delegation, GroupMembership, OrganizationChoices, RoleDefinition, NodeDescription, ServiceApproval, StorageLocation, TestingNote, User, Workspace, Organization, Membership } from './contracts.js';
+import type { AccessGrant, AccessGroup, AccessIndex, ApplicationDefinition, CapabilityChoice, DependencyKind, ItemDependency, ItemExample, ItemNote, CatalogRelease, ChangePacket, ChoosingWay, Delegation, GroupMembership, OrganizationChoices, RoleDefinition, NodeDescription, ServiceApproval, StorageLocation, TestingNote, User, Workspace, Organization, Membership } from './contracts.js';
 import { AuthStore } from './auth-store.js';
 import { authenticateToken, bearerToken, createCredential, issueSession, normalizeEmail, verifyPassword, workspacesForUser } from './auth.js';
 import { AccessStore } from './store.js';
@@ -34,6 +34,32 @@ const KEY = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
 const keyOf = (value: unknown, name: string) => { const key = text(value, name); if (key.length > 120 || !KEY.test(key)) throw new Error(`Invalid ${name}: use lowercase letters and digits, with words joined by dots or hyphens`); return key; };
 /** A list entry names a service key, or one exact version as key@version. */
 const serviceEntry = (value: unknown) => { const entry = text(value, 'services entry'); const [key, version, extra] = entry.split('@'); if (extra !== undefined || !KEY.test(key ?? '') || (version !== undefined && !/^[0-9A-Za-z.+-]{1,40}$/.test(version))) throw new Error(`Invalid services entry ${entry}: a service key, or key@version`); return entry; };
+
+const DEPENDENCY_KINDS: DependencyKind[] = ['account', 'setting', 'program', 'network', 'software', 'file', 'other'];
+const longText = (value: unknown, name: string, max: number) => { if (value === undefined || value === null || value === '') return undefined; if (typeof value !== 'string' || value.length > max) throw new Error(`Invalid ${name}: text of at most ${max} characters`); return value.trim() || undefined; };
+/** A note as saved: checked, trimmed, and small enough to send with every description. */
+function itemNoteOf(payload: Record<string, unknown>): ItemNote {
+  const kind = text(payload.kind, 'kind') as ItemNote['kind'];
+  if (kind !== 'capability' && kind !== 'service') throw new Error('Invalid kind: capability or service');
+  if (payload.dependencies !== undefined && (!Array.isArray(payload.dependencies) || payload.dependencies.length > 30)) throw new Error('Invalid dependencies: a list of at most 30');
+  if (payload.examples !== undefined && (!Array.isArray(payload.examples) || payload.examples.length > 10)) throw new Error('Invalid examples: a list of at most 10');
+  const dependencies = ((payload.dependencies ?? []) as Array<Record<string, unknown>>).map((entry): ItemDependency => {
+    if (!entry || typeof entry !== 'object') throw new Error('Invalid dependencies: each is { kind, name, note }');
+    const dependencyKind = text(entry.kind, 'dependency kind') as DependencyKind;
+    if (!DEPENDENCY_KINDS.includes(dependencyKind)) throw new Error(`Invalid dependency kind ${dependencyKind}: ${DEPENDENCY_KINDS.join(', ')}`);
+    const note = longText(entry.note, 'dependency note', 500);
+    return { kind: dependencyKind, name: longText(entry.name, 'dependency name', 120) ?? text(undefined, 'dependency name'), ...(note ? { note } : {}) };
+  });
+  const examples = ((payload.examples ?? []) as Array<Record<string, unknown>>).map((entry): ItemExample => {
+    if (!entry || typeof entry !== 'object' || entry.request === undefined) throw new Error('Invalid examples: each is { title, operation, request, result, note }, with a request');
+    const operation = longText(entry.operation, 'example operation', 60), note = longText(entry.note, 'example note', 1000);
+    return { title: longText(entry.title, 'example title', 200) ?? text(undefined, 'example title'), ...(operation ? { operation } : {}), request: entry.request, ...(entry.result !== undefined ? { result: entry.result } : {}), ...(note ? { note } : {}) };
+  });
+  const summary = longText(payload.summary, 'summary', 1000), details = longText(payload.details, 'details', 8000);
+  const note: ItemNote = { kind, key: keyOf(payload.key, 'key'), ...(summary ? { summary } : {}), ...(details ? { details } : {}), dependencies, examples, updatedAt: new Date().toISOString() };
+  if (JSON.stringify(note).length > 64 * 1024) throw new Error('Invalid note: at most 64 KB in all; shorten the examples');
+  return note;
+}
 
 /**
  * The choices that apply to a command for a capability (D-193): the organization's and the workspace's records, for the
@@ -84,6 +110,12 @@ export function createAccessServer(input: { store: AccessStore; authStore: AuthS
         return json(response, 200, { allowed, applicationKey, operation, ...(organizationId ? { organizationId } : {}), ...(workspace ? { workspaceId: workspace.id } : {}), choices });
       }
 
+      if (request.method === 'GET' && /^\/v1\/access\/item-notes\/(capability|service)\/[^/]+$/.test(url.pathname)) {
+        if (!admin(request) && request.headers['x-sema-access-policy-key'] !== input.policyKey) return json(response, 403, { error: 'Reading notes needs the administrator key or the policy key.' });
+        const [, , , , kind, rawKey] = url.pathname.split('/'); const key = decodeURIComponent(rawKey ?? '');
+        const note = (await input.store.load()).itemNotes.find((entry) => entry.kind === kind && entry.key === key);
+        return note ? json(response, 200, note) : json(response, 404, { error: `No note for ${kind} ${key}` });
+      }
       if (request.method === 'POST' && url.pathname === '/v1/access/auth/login') {
         const payload = await body(request);
         let email: string;
@@ -265,6 +297,14 @@ export function createAccessServer(input: { store: AccessStore; authStore: AuthS
       if (request.method === 'POST' && /^\/v1\/access\/applications\/[^/]+$/.test(url.pathname)) { const applicationId = decodeURIComponent(url.pathname.split('/')[4] ?? ''); const payload = await body(request); const application = await input.store.update((index) => { const target = index.applications.find((entry) => entry.id === applicationId); if (!target) throw new Error('Application does not exist'); target.displayName = text(payload.displayName, 'displayName'); target.vendor = optional(payload.vendor); target.version = text(payload.version, 'version'); target.description = optional(payload.description); target.status = recordStatus(payload.status); target.updatedAt = new Date().toISOString(); return target; }); await audit('application.updated', [application.id], { applicationKey: application.applicationKey, status: application.status }); return json(response, 200, application); }
       if (request.method === 'POST' && url.pathname === '/v1/access/catalog/releases') { const payload = await body(request); const release: CatalogRelease = { id: await input.core.issue('SERVICE_RELEASE'), capabilityKey: text(payload.capabilityKey, 'capabilityKey'), providerKey: text(payload.providerKey, 'providerKey'), serviceKey: text(payload.serviceKey, 'serviceKey'), version: text(payload.version, 'version'), displayName: text(payload.displayName, 'displayName'), packageUri: optional(payload.packageUri), packageHash: optional(payload.packageHash), manifest: (payload.manifest && typeof payload.manifest === 'object' && !Array.isArray(payload.manifest) ? payload.manifest : {}) as Record<string, unknown>, trustStatus: 'UNVERIFIED', status: 'DISCOVERED', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; await input.store.update((index) => { index.catalogReleases.push(release); }); await audit('catalog.release.discovered', [release.id], { capabilityKey: release.capabilityKey, serviceKey: release.serviceKey }); return json(response, 201, release); }
       if (request.method === 'POST' && /^\/v1\/access\/catalog\/releases\/[^/]+\/transition$/.test(url.pathname)) { const releaseId = decodeURIComponent(url.pathname.split('/')[5] ?? ''); const payload = await body(request); const trustStatus = text(payload.trustStatus, 'trustStatus') as CatalogRelease['trustStatus']; const status = text(payload.status, 'status') as CatalogRelease['status']; if (!['UNVERIFIED', 'VERIFIED', 'REJECTED'].includes(trustStatus) || !['DISCOVERED', 'INSTALLED', 'ACTIVE', 'DISABLED', 'REMOVED'].includes(status)) throw new Error('Invalid release lifecycle status'); const release = await input.store.update((index) => { const target = index.catalogReleases.find((candidate) => candidate.id === releaseId); if (!target) throw new Error('Catalog release does not exist'); target.trustStatus = trustStatus; target.status = status; target.updatedAt = new Date().toISOString(); return target; }); await audit('catalog.release.transitioned', [release.id], { trustStatus, status }); return json(response, 200, release); }
+      // A note on a capability or a service (D-196 to D-198): saved in place by kind and key. With nothing in it, removed.
+      if (request.method === 'POST' && url.pathname === '/v1/access/item-notes') {
+        const note = itemNoteOf(await body(request));
+        const empty = !note.summary && !note.details && !note.dependencies.length && !note.examples.length;
+        await input.store.update((index) => { index.itemNotes = index.itemNotes.filter((entry) => !(entry.kind === note.kind && entry.key === note.key)); if (!empty) index.itemNotes.push(note); });
+        await audit('foundation-access.item-note.saved', [], { kind: note.kind, key: note.key, removed: empty });
+        return json(response, 200, empty ? { removed: true } : note);
+      }
       // An organization's choices for a capability (D-190): saved in place for its organization, workspace, capability and job.
       // With neither services nor way, the record is removed.
       if (request.method === 'POST' && url.pathname === '/v1/access/capability-choices') {
