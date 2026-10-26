@@ -2,6 +2,11 @@
 
 Local-first Foundation service for the administrative records shared by SEMA applications. It has no VectorForge, ListingForge, marketplace, or artwork workflow code.
 
+## A service's settings (v0.12.0, D-204)
+
+- `POST /v1/access/service-settings` saves an organization's choice of a service's settings, such as `{ "organizationId": "3-9rJ", "serviceKey": "neo.ai.claude", "values": { "model": "claude-sonnet-5-5" } }`, optionally for one workspace, whose values replace the organization's. A value given as `null` or `""` is cleared; with none left, the record is removed.
+- The policy answer for a capability command gives them in `choices.settings`, by service key; Core hands each service its own with the work. The service offers the choices; it uses its own default for a value it does not offer.
+
 ## Notes on capabilities and services (v0.11.0, D-196 to D-198)
 
 - `POST /v1/access/item-notes` saves the note on a capability or a service by `kind` (`capability` or `service`) and `key`: `summary` (what it does), `details`, `dependencies` (each `{ kind, name, note }`, kind one of account, setting, program, network, software, file, other) and `examples` (each `{ title, operation, request, result, note }`). A note with nothing in it is removed. At most 64 KB.

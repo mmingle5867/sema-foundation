@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import type { AccessGrant, AccessGroup, AccessIndex, ApplicationDefinition, CapabilityChoice, DependencyKind, ItemDependency, ItemExample, ItemNote, CatalogRelease, ChangePacket, ChoosingWay, Delegation, GroupMembership, OrganizationChoices, RoleDefinition, NodeDescription, ServiceApproval, StorageLocation, TestingNote, User, Workspace, Organization, Membership } from './contracts.js';
+import type { AccessGrant, AccessGroup, AccessIndex, ApplicationDefinition, CapabilityChoice, DependencyKind, ItemDependency, ItemExample, ItemNote, ServiceSetting, CatalogRelease, ChangePacket, ChoosingWay, Delegation, GroupMembership, OrganizationChoices, RoleDefinition, NodeDescription, ServiceApproval, StorageLocation, TestingNote, User, Workspace, Organization, Membership } from './contracts.js';
 import { AuthStore } from './auth-store.js';
 import { authenticateToken, bearerToken, createCredential, issueSession, normalizeEmail, verifyPassword, workspacesForUser } from './auth.js';
 import { AccessStore } from './store.js';
@@ -61,6 +61,15 @@ function itemNoteOf(payload: Record<string, unknown>): ItemNote {
   return note;
 }
 
+/** The services' settings for an organization, with a workspace's values replacing its organization's (D-204). */
+export function settingsFor(index: AccessIndex, organizationId: string, workspaceId: string | undefined): Record<string, Record<string, string>> {
+  const settings: Record<string, Record<string, string>> = {};
+  const apply = (record: ServiceSetting) => { settings[record.serviceKey] = { ...settings[record.serviceKey], ...record.values }; };
+  index.serviceSettings.filter((record) => record.organizationId === organizationId && !record.workspaceId).forEach(apply);
+  if (workspaceId) index.serviceSettings.filter((record) => record.organizationId === organizationId && record.workspaceId === workspaceId).forEach(apply);
+  return settings;
+}
+
 /**
  * The choices that apply to a command for a capability (D-193): the organization's and the workspace's records, for the
  * capability and for its job, most specific first. Core keeps a service only if every list allows it, so a workspace can
@@ -77,6 +86,7 @@ export function choicesFor(index: AccessIndex, organizationId: string, workspace
     ...(records.find((record) => record.way) ? { way: records.find((record) => record.way)!.way } : {}),
     approvalRequired: organization?.serviceApproval === true || workspace?.serviceApproval === true,
     approved: index.serviceApprovals.filter((approval) => approval.organizationId === organizationId && !approval.revokedAt).map((approval) => approval.serviceVersionId),
+    settings: settingsFor(index, organizationId, workspaceId),
   };
 }
 
@@ -106,7 +116,7 @@ export function createAccessServer(input: { store: AccessStore; authStore: AuthS
         if (!capabilityKey || !allowed) return json(response, 200, { allowed, applicationKey, operation });
         // The command's workspace, else the organization of the grant that allowed it.
         const organizationId = workspace?.organizationId ?? allowing.find((grant) => grant.organizationId)?.organizationId;
-        const choices: OrganizationChoices = organizationId ? choicesFor(index, organizationId, workspace?.id, capabilityKey, jobKey) : { lists: [], approvalRequired: false, approved: [] };
+        const choices: OrganizationChoices = organizationId ? choicesFor(index, organizationId, workspace?.id, capabilityKey, jobKey) : { lists: [], approvalRequired: false, approved: [], settings: {} };
         return json(response, 200, { allowed, applicationKey, operation, ...(organizationId ? { organizationId } : {}), ...(workspace ? { workspaceId: workspace.id } : {}), choices });
       }
 
@@ -304,6 +314,32 @@ export function createAccessServer(input: { store: AccessStore; authStore: AuthS
         await input.store.update((index) => { index.itemNotes = index.itemNotes.filter((entry) => !(entry.kind === note.kind && entry.key === note.key)); if (!empty) index.itemNotes.push(note); });
         await audit('foundation-access.item-note.saved', [], { kind: note.kind, key: note.key, removed: empty });
         return json(response, 200, empty ? { removed: true } : note);
+      }
+      // An organization's choice of a service's settings (D-204): saved in place for its organization, workspace and service.
+      // A setting given as null or "" is cleared; with none left, the record is removed.
+      if (request.method === 'POST' && url.pathname === '/v1/access/service-settings') {
+        const payload = await body(request); const organizationId = text(payload.organizationId, 'organizationId'); const workspaceId = optional(payload.workspaceId); const serviceKey = keyOf(payload.serviceKey, 'serviceKey');
+        if (!payload.values || typeof payload.values !== 'object' || Array.isArray(payload.values)) throw new Error('Invalid values: an object of setting names and values, such as { "model": "claude-sonnet-5-5" }');
+        const given = Object.entries(payload.values as Record<string, unknown>);
+        if (given.length > 20) throw new Error('Invalid values: at most 20 settings');
+        for (const [name, value] of given) {
+          if (!/^[a-z][a-z0-9-]{0,39}$/.test(name)) throw new Error(`Invalid setting name ${name}: lowercase letters, digits and hyphens`);
+          if (value !== null && value !== '' && (typeof value !== 'string' || value.length > 100)) throw new Error(`Invalid value for ${name}: text of at most 100 characters`);
+        }
+        const saved = await input.store.update((index) => {
+          if (!index.organizations.some((entry) => entry.id === organizationId)) throw new Error('organizationId does not exist');
+          if (workspaceId && !index.workspaces.some((entry) => entry.id === workspaceId && entry.organizationId === organizationId)) throw new Error('workspaceId does not exist for organizationId');
+          const same = (record: ServiceSetting) => record.organizationId === organizationId && record.workspaceId === workspaceId && record.serviceKey === serviceKey;
+          const values: Record<string, string> = { ...index.serviceSettings.find(same)?.values };
+          for (const [name, value] of given) { if (value === null || value === '') delete values[name]; else values[name] = (value as string).trim(); }
+          index.serviceSettings = index.serviceSettings.filter((record) => !same(record));
+          if (!Object.keys(values).length) return undefined;
+          const record: ServiceSetting = { organizationId, ...(workspaceId ? { workspaceId } : {}), serviceKey, values, updatedAt: new Date().toISOString() };
+          index.serviceSettings.push(record);
+          return record;
+        });
+        await audit('foundation-access.service-setting.saved', [organizationId, ...(workspaceId ? [workspaceId] : [])], { serviceKey, values: saved?.values ?? null });
+        return json(response, 200, saved ?? { removed: true });
       }
       // An organization's choices for a capability (D-190): saved in place for its organization, workspace, capability and job.
       // With neither services nor way, the record is removed.
