@@ -33,8 +33,14 @@ export type ChoosingWay = 'bound' | 'dynamic' | 'consensus';
 export type CapabilityChoice = { organizationId: string; workspaceId?: string; capabilityKey: string; jobKey?: string; services?: string[]; way?: ChoosingWay; updatedAt: string };
 /** An administrator's approval of one service version for an organization (D-191). It never covers a newer version. */
 export type ServiceApproval = { id: string; organizationId: string; serviceVersionId: string; serviceKey: string; version: string; approvedAt: string; revokedAt?: string };
-/** What Core gets with a "may" answer for a capability: the lists that apply, most specific first, and the approvals. */
-export type OrganizationChoices = { lists: string[][]; way?: ChoosingWay; approvalRequired: boolean; approved: string[] };
+/**
+ * An organization's choice of a service's settings (D-204), such as { model: "claude-sonnet-5-5" }, for the organization
+ * or one of its workspaces; a workspace's value replaces its organization's. The service offers the choices (Core keeps
+ * them); a value it does not offer is left to the service, which uses its own default.
+ */
+export type ServiceSetting = { organizationId: string; workspaceId?: string; serviceKey: string; values: Record<string, string>; updatedAt: string };
+/** What Core gets with a "may" answer for a capability: the lists that apply, most specific first, the approvals, and the services' settings. */
+export type OrganizationChoices = { lists: string[][]; way?: ChoosingWay; approvalRequired: boolean; approved: string[]; settings: Record<string, Record<string, string>> };
 
 /**
  * Notes on a capability or a service (D-196 to D-198), by key so they cover every version: what it does, in plain words,
@@ -115,8 +121,8 @@ export type AccessIndex = {
   users: User[]; organizations: Organization[]; workspaces: Workspace[]; memberships: Membership[]; roleDefinitions: RoleDefinition[]; groups: AccessGroup[]; groupMemberships: GroupMembership[]; delegations: Delegation[];
   storageLocations: StorageLocation[]; nodeDescriptions: NodeDescription[]; applications: ApplicationDefinition[];
   installations: ApplicationInstallation[]; catalogReleases: CatalogRelease[]; grants: AccessGrant[]; testingNotes: TestingNote[]; changePackets: ChangePacket[];
-  capabilityChoices: CapabilityChoice[]; serviceApprovals: ServiceApproval[]; itemNotes: ItemNote[];
+  capabilityChoices: CapabilityChoice[]; serviceApprovals: ServiceApproval[]; itemNotes: ItemNote[]; serviceSettings: ServiceSetting[];
 };
 
-export const blankIndex = (): AccessIndex => ({ version: 1, users: [], organizations: [], workspaces: [], memberships: [], roleDefinitions: [], groups: [], groupMemberships: [], delegations: [], storageLocations: [], nodeDescriptions: [], applications: [], installations: [], catalogReleases: [], grants: [], testingNotes: [], changePackets: [], capabilityChoices: [], serviceApprovals: [], itemNotes: [] });
+export const blankIndex = (): AccessIndex => ({ version: 1, users: [], organizations: [], workspaces: [], memberships: [], roleDefinitions: [], groups: [], groupMemberships: [], delegations: [], storageLocations: [], nodeDescriptions: [], applications: [], installations: [], catalogReleases: [], grants: [], testingNotes: [], changePackets: [], capabilityChoices: [], serviceApprovals: [], itemNotes: [], serviceSettings: [] });
 export const blankAuthState = (): AuthState => ({ version: 1, credentials: [], sessions: [] });

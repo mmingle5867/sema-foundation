@@ -119,7 +119,7 @@ try {
   const evaluate = async (value: Record<string, unknown>) => (await post('/v1/access/policy/evaluate', { applicationKey: 'vectorforge', ...value }, { 'content-type': 'application/json', 'x-sema-access-policy-key': 'policy' })).json() as Promise<Record<string, unknown>>;
   assert.equal((await post('/v1/access/grants', { granteeKind: 'APPLICATION', granteeId: applicationRecord.id, operations: ['capability.sema.ai.generate'], organizationId })).status, 201);
   // No record: nothing narrowed, no approval needed.
-  assert.deepEqual(await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' }), { allowed: true, applicationKey: 'vectorforge', operation: 'capability.sema.ai.generate', organizationId, choices: { lists: [], approvalRequired: false, approved: [] } });
+  assert.deepEqual(await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' }), { allowed: true, applicationKey: 'vectorforge', operation: 'capability.sema.ai.generate', organizationId, choices: { lists: [], approvalRequired: false, approved: [], settings: {} } });
   assert.deepEqual(Object.keys(await evaluate({ operation: 'capability.sema.ai.generate' })).sort(), ['allowed', 'applicationKey', 'operation'], 'without a capability the answer is as before');
   const choose = (value: Record<string, unknown>) => post('/v1/access/capability-choices', { organizationId, capabilityKey: 'sema.ai.generate', ...value });
   assert.equal((await choose({ services: ['neo.ai.claude', 'neo.ai.local@1.2.0'], way: 'dynamic' })).status, 200);
@@ -130,9 +130,9 @@ try {
   await choose({ services: ['neo.ai.claude', 'neo.ai.local@1.2.0'], way: 'dynamic' });
   // In a workspace, for the job: the most specific list first, the workspace's way.
   const inWorkspace = await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate', jobKey: 'listing-copy', workspaceId });
-  assert.deepEqual(inWorkspace.choices, { lists: [['neo.ai.claude'], ['neo.ai.claude', 'neo.ai.local@1.2.0']], way: 'consensus', approvalRequired: false, approved: [] });
+  assert.deepEqual(inWorkspace.choices, { lists: [['neo.ai.claude'], ['neo.ai.claude', 'neo.ai.local@1.2.0']], way: 'consensus', approvalRequired: false, approved: [], settings: {} });
   assert.equal(inWorkspace.workspaceId, workspaceId);
-  assert.deepEqual((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices, { lists: [['neo.ai.claude', 'neo.ai.local@1.2.0']], way: 'dynamic', approvalRequired: false, approved: [] }, 'another job or no workspace: only what applies');
+  assert.deepEqual((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices, { lists: [['neo.ai.claude', 'neo.ai.local@1.2.0']], way: 'dynamic', approvalRequired: false, approved: [], settings: {} }, 'another job or no workspace: only what applies');
   assert.equal((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate', workspaceId: 'unknown' })).allowed, false, 'an unknown workspace allows nothing');
   // Approval before first use: off unless turned on; per service version.
   assert.equal((await post(`/v1/access/workspaces/${workspaceId}/service-approval`, { on: true })).status, 200);
@@ -144,12 +144,26 @@ try {
   assert.equal(approvalResponse.status, 201);
   const approval = await approvalResponse.json() as { id: string };
   assert.equal((await post('/v1/access/service-approvals', { organizationId, serviceVersionId: '3-sv1', serviceKey: 'neo.ai.claude', version: '0.3.2' })).status, 400, 'approved once');
-  assert.deepEqual((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices, { lists: [['neo.ai.claude', 'neo.ai.local@1.2.0']], way: 'dynamic', approvalRequired: true, approved: ['3-sv1'] });
+  assert.deepEqual((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices, { lists: [['neo.ai.claude', 'neo.ai.local@1.2.0']], way: 'dynamic', approvalRequired: true, approved: ['3-sv1'], settings: {} });
   assert.equal((await post(`/v1/access/service-approvals/${approval.id}/revoke`, {})).status, 200);
   assert.deepEqual(((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices as { approved: string[] }).approved, [], 'a revoked approval no longer counts');
   // Saving with neither services nor way removes the record.
   assert.deepEqual(await (await choose({})).json(), { removed: true });
   assert.deepEqual(((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate' })).choices as { lists: unknown[] }).lists, []);
+  // A service's settings (D-204): the organization's, with a workspace's values replacing them, given with the may answer.
+  const setting = (value: Record<string, unknown>) => post('/v1/access/service-settings', { organizationId, serviceKey: 'neo.ai.claude', ...value });
+  assert.equal((await setting({ values: { model: 'claude-sonnet-5-5', effort: 'low' } })).status, 200);
+  assert.equal((await setting({ workspaceId, values: { model: 'claude-haiku-5-5' } })).status, 200);
+  const settingsOf = async (value: Record<string, unknown>) => ((await evaluate({ operation: 'capability.sema.ai.generate', capabilityKey: 'sema.ai.generate', ...value })).choices as { settings: unknown }).settings;
+  assert.deepEqual(await settingsOf({}), { 'neo.ai.claude': { model: 'claude-sonnet-5-5', effort: 'low' } });
+  assert.deepEqual(await settingsOf({ workspaceId }), { 'neo.ai.claude': { model: 'claude-haiku-5-5', effort: 'low' } }, 'the workspace replaces the model, keeps the effort');
+  for (const [bad, why] of [[{ values: [] }, 'a list'], [{ values: { Model: 'x' } }, 'a setting name'], [{ values: { model: 5 } }, 'a value'], [{ serviceKey: 'Neo AI', values: { model: 'x' } }, 'a service key'], [{ workspaceId: 'nope', values: { model: 'x' } }, 'an unknown workspace']] as const) assert.equal((await setting(bad)).status, 400, `refused: ${why}`);
+  assert.equal((await post('/v1/access/service-settings', { organizationId, serviceKey: 'neo.ai.claude', values: { model: 'x' } }, { 'content-type': 'application/json' })).status, 403, 'administration is required');
+  assert.deepEqual(((await (await setting({ values: { effort: null } })).json()) as { values: unknown }).values, { model: 'claude-sonnet-5-5' }, 'a setting given as null is cleared');
+  assert.deepEqual(await (await setting({ workspaceId, values: { model: '' } })).json(), { removed: true }, 'with none left, the record goes');
+  assert.deepEqual(await settingsOf({ workspaceId }), { 'neo.ai.claude': { model: 'claude-sonnet-5-5' } });
+  await setting({ values: { model: null } });
+  assert.deepEqual(await settingsOf({}), {});
   // Notes on capabilities and services (D-196 to D-198).
   const itemNote = { kind: 'service', key: 'neo.ai.claude', summary: 'Answers Ask an AI with Claude.', details: 'Uses the Messages API.', dependencies: [{ kind: 'account', name: 'Anthropic', note: 'An API account.' }, { kind: 'setting', name: 'ANTHROPIC_API_KEY' }], examples: [{ title: 'Listing copy', operation: 'generate', request: { job: { key: 'listing-copy' } }, result: { title: 'A mug' } }] };
   const saved = await post('/v1/access/item-notes', itemNote);
